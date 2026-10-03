@@ -1,0 +1,93 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "J. Wayne Reitz Union",
+        "category": "university"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.347587, 29.645933]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "The Oaks Mall",
+        "category": "shopping"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.41147, 29.65613]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Butler Plaza",
+        "category": "shopping"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.38168, 29.62342]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Rosa Parks Downtown Station",
+        "category": "transit"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.3226968119631, 29.6455673440143]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "UF Health Shands Hospital",
+        "category": "hospital"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.3431, 29.6399]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Santa Fe College Northwest Campus",
+        "category": "college"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.4325392, 29.6783793]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Celebration Pointe",
+        "category": "shopping"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.39551, 29.62425]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Southwest Recreation Center",
+        "category": "university"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-82.3683611, 29.6384167]
+      }
+    }
+  ]
+}
