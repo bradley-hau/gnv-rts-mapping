@@ -266,6 +266,28 @@ map.on("load", async () => {
       "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 12, 4, 16, 6],
     },
   });
+
+  map.addLayer({
+    id: "route-number-layer",
+    type: "symbol",
+    source: "route",
+
+    layout: {
+      "symbol-placement": "line",
+      "text-field": ["get", "route_short_name"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 10, 11, 14, 14, 18, 18],
+      "text-keep-upright": true,
+      "text-padding": 8,
+    },
+
+    paint: {
+      "text-color": "#ffffff",
+      "text-halo-color": ["get", "route_color"],
+      "text-halo-width": 2,
+      "text-halo-blur": 0.25,
+    },
+  });
+
   map.addSource("key-places", {
     type: "geojson",
     data: "/data/key-places.geojson",
