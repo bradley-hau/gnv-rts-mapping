@@ -6,3 +6,29 @@ body,
   height: 100%;
   margin: 0;
 }
+
+body { font-family: system-ui, sans-serif; color: #213547; }
+.legend {
+  position: absolute;
+  bottom: 28px;
+  left: 16px;
+  z-index: 2;
+  width: min(300px, calc(100vw - 64px));
+  padding: 18px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 3px 18px #173b6526;
+}
+.legend h1 { font-size: 18px; margin: 0 0 16px; }
+.legend h2 { font-size: 13px; margin: 14px 0 8px; }
+.legend p, .scale-labels { font-size: 12px; }
+.legend small { display: block; font-size: 11px; line-height: 1.5; color: #586674; }
+.distance-scale, .route-scale { height: 10px; border-radius: 5px; }
+.distance-scale { background: linear-gradient(to right, #008577, #8ebf87, #efac48, #cf443c); }
+.route-scale { background: linear-gradient(to right, #cad2dc, #173b65); }
+.scale-labels { display: flex; justify-content: space-between; margin-top: 5px; }
+.stop-key { display: inline-block; width: 7px; height: 7px; border: 1.5px solid #334155; border-radius: 50%; background: white; }
+@media (max-width: 600px) {
+  .legend { left: 10px; bottom: 24px; padding: 12px; }
+  .legend h1 { margin-bottom: 8px; }
+}

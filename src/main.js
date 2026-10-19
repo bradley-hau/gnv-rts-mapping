@@ -8,6 +8,18 @@ setWorkerUrl(workerUrl);
 
 document.querySelector("#app").innerHTML = `
   <div id="map"></div>
+  <aside class="legend" aria-label="Map legend">
+    <h1>Transit access</h1>
+    <h2>Distance to nearest bus stop</h2>
+    <div class="distance-scale"></div>
+    <div class="scale-labels"><span>0 m</span><span>400 m</span><span>800 m</span><span>1.2+ km</span></div>
+    <p>Each dot represents about 10 people.</p>
+    <h2>Overlapping route lines</h2>
+    <div class="route-scale"></div>
+    <div class="scale-labels"><span>Fewer</span><span>More</span></div>
+    <p><span class="stop-key"></span> Bus stop</p>
+    <small>Dots are randomly placed within census areas. Distances are straight-line estimates, not walking distances. Route shading shows overlapping shapes, not service frequency.</small>
+  </aside>
 `;
 
 function generatePopulationDots(geojson, peoplePerDot = 1) {
@@ -44,6 +56,28 @@ function generatePopulationDots(geojson, peoplePerDot = 1) {
     features: dots,
   };
 }
+// Compare points on a unit sphere; chord distance has the same nearest
+// neighbor as great-circle distance, without trigonometry in the inner loop.
+function colorPopulationByDistance(dots, stops) {
+  const toVector = ([longitude, latitude]) => {
+    const lat = latitude * Math.PI / 180;
+    const lon = longitude * Math.PI / 180;
+    return [Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)];
+  };
+  const stopVectors = stops.features.map(stop => toVector(stop.geometry.coordinates));
+  for (const dot of dots.features) {
+    const point = toVector(dot.geometry.coordinates);
+    let nearestSquared = Infinity;
+    for (const stop of stopVectors) {
+      const squared = (point[0] - stop[0]) ** 2 + (point[1] - stop[1]) ** 2 + (point[2] - stop[2]) ** 2;
+      if (squared < nearestSquared) nearestSquared = squared;
+    }
+    dot.properties.stopDistanceMeters = stopVectors.length
+      ? 2 * 6371008.8 * Math.asin(Math.min(1, Math.sqrt(nearestSquared) / 2))
+      : null;
+  }
+}
+
 function parseCSV(text) {
   const lines = text.trim().split("\n");
 
@@ -185,12 +219,14 @@ const map = new Map({
   zoom: 12,
 });
 
-const response = await fetch("data/populationOfGnv.geojson");
-const censusData = await response.json();
-
-const populationDots = generatePopulationDots(censusData, 10);
-
 map.on("load", async () => {
+  const [stops, routes, censusData] = await Promise.all([
+    stopsToGeoJson(),
+    routesToGeoJSON(),
+    fetch("/data/populationOfGnv.geojson").then(response => response.json()),
+  ]);
+  const populationDots = generatePopulationDots(censusData, 10);
+  colorPopulationByDistance(populationDots, stops);
   map.addSource("population-dots", {
     type: "geojson",
     data: populationDots,
@@ -214,12 +250,15 @@ map.on("load", async () => {
         5,
       ],
 
-      "circle-color": "#ff3b30",
+      "circle-color": [
+        "case", ["==", ["get", "stopDistanceMeters"], null], "#89929a",
+        ["interpolate", ["linear"], ["get", "stopDistanceMeters"],
+          0, "#008577", 400, "#8ebf87", 800, "#efac48", 1200, "#cf443c"],
+      ],
       "circle-opacity": 0.7,
     },
   });
 
-  const stops = await stopsToGeoJson();
 
   map.addSource("stops", {
     type: "geojson",
@@ -244,11 +283,12 @@ map.on("load", async () => {
         7,
       ],
 
-      "circle-color": "#007AFF",
+      "circle-color": "#ffffff",
+      "circle-stroke-color": "#334155",
+      "circle-stroke-width": 1.5,
     },
   });
 
-  const routes = await routesToGeoJSON();
 
   map.addSource("route", {
     type: "geojson",
@@ -261,11 +301,15 @@ map.on("load", async () => {
     source: "route",
 
     paint: {
-      "line-color": ["get", "route_color"],
+      "line-color": "#173b65",
+      "line-opacity": 0.23,
 
       "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 12, 4, 16, 6],
     },
   });
+
+  // Keep people and stops legible above the translucent routes.
+  map.moveLayer("route-layer", "population-dots-layer");
 
   map.addLayer({
     id: "route-number-layer",
@@ -282,7 +326,7 @@ map.on("load", async () => {
 
     paint: {
       "text-color": "#ffffff",
-      "text-halo-color": ["get", "route_color"],
+      "text-halo-color": "#173b65",
       "text-halo-width": 2,
       "text-halo-blur": 0.25,
     },
