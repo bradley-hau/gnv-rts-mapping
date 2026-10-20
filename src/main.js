@@ -6,7 +6,7 @@ import * as turf from "@turf/turf";
 
 setWorkerUrl(workerUrl);
 
-// Render HTML layout with legend and route selector
+// Render Layout with Legend and Route Selector
 document.querySelector("#app").innerHTML = `
   <div id="map"></div>
   <aside class="legend" aria-label="Map legend">
@@ -14,9 +14,16 @@ document.querySelector("#app").innerHTML = `
 
     <h2>Filter by Route</h2>
     <div style="margin-bottom: 12px;">
-      <select id="route-select" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ccc;">
+      <select id="route-select" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ccc; background: white; font-size: 14px;">
         <option value="ALL">All Routes</option>
       </select>
+    </div>
+
+    <h2>Departure Frequency (Daily)</h2>
+    <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; margin-bottom: 8px;">
+      <span><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#94a3b8;"></span> Low (0-5)</span>
+      <span><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:#f59e0b;"></span> Med (10-20)</span>
+      <span><span style="display:inline-block; width:16px; height:16px; border-radius:50%; background:#15803d;"></span> High (50+)</span>
     </div>
 
     <h2>Distance to Nearest Stop</h2>
@@ -33,13 +40,14 @@ document.querySelector("#app").innerHTML = `
 `;
 
 function parseCSV(text) {
+  if (!text) return [];
   const lines = text.trim().split("\n");
   if (lines.length < 2) return [];
 
-  const headers = lines[0].trim().split(",").map((h) => h.trim());
+  const headers = lines[0].trim().split(",").map((h) => h.trim().replace(/^"|"$/g, ''));
 
   return lines.slice(1).map((line) => {
-    const values = line.trim().split(",").map((v) => v.trim());
+    const values = line.trim().split(",").map((v) => v.trim().replace(/^"|"$/g, ''));
     const row = {};
     headers.forEach((header, i) => {
       row[header] = values[i] !== undefined ? values[i] : "";
@@ -89,6 +97,7 @@ function gtfsTimeToMinutes(time) {
   return parts[0] * 60 + parts[1] + parts[2] / 60;
 }
 
+// Key Fix: Processes stop_times.txt and forces departures = 0 as fallback for all stops
 async function calculateStopFrequencies(stopsGeoJson, dateString, selectedRouteId = "ALL") {
   const [stopTimesRes, tripsRes, calendarRes, exceptionsRes] = await Promise.all([
     fetch("/data/stop_times.txt"),
@@ -113,7 +122,8 @@ async function calculateStopFrequencies(stopsGeoJson, dateString, selectedRouteI
   const tripLookup = new Map();
 
   for (const trip of trips) {
-    if (activeServices.has(trip.service_id)) {
+    // If active on calendar, match against selected route or ALL routes
+    if (activeServices.size === 0 || activeServices.has(trip.service_id)) {
       if (selectedRouteId === "ALL" || trip.route_id === selectedRouteId) {
         tripLookup.set(trip.trip_id, trip);
       }
@@ -142,9 +152,10 @@ async function calculateStopFrequencies(stopsGeoJson, dateString, selectedRouteI
     stats.routes.add(trip.route_id);
   }
 
-  // Assign explicitly typed Numbers to properties for MapLibre expressions
+  // Ensure ALL stop features have numeric departure properties (never undefined/NaN)
   for (const stop of stopsGeoJson.features) {
-    const stats = stopStats.get(stop.properties.stop_id);
+    const stopId = String(stop.properties.stop_id);
+    const stats = stopStats.get(stopId);
     const times = stats?.times.sort((a, b) => a - b) || [];
 
     let averageHeadway = null;
@@ -152,8 +163,9 @@ async function calculateStopFrequencies(stopsGeoJson, dateString, selectedRouteI
       averageHeadway = (times[times.length - 1] - times[0]) / (times.length - 1);
     }
 
-    stop.properties.departures = Number(times.length);
-    stop.properties.routeCount = Number(stats?.routes.size || 0);
+    // Explicitly set clean Numbers for MapLibre's paint interpolations
+    stop.properties.departures = times.length;
+    stop.properties.routeCount = stats ? stats.routes.size : 0;
     stop.properties.averageHeadway = averageHeadway !== null ? Number(averageHeadway) : null;
   }
 
@@ -295,7 +307,7 @@ async function routesToGeoJSON() {
   };
 }
 
-// Maplibre initialization
+// Maplibre Map Initialization
 const map = new MapLibreMap({
   container: "map",
   style: "https://tiles.openfreemap.org/styles/positron",
@@ -320,20 +332,20 @@ map.on("load", async () => {
     routeSelect.appendChild(opt);
   });
 
-  // Calculate default frequency values for stops (Adjust date to match your feed calendar)
+  // Calculate GTFS Stop Frequencies from stop_times.txt
   const dateString = "2026-10-20";
   const stops = await calculateStopFrequencies(rawStops, dateString, "ALL");
 
   const populationDots = generatePopulationDots(censusData, 10);
   colorPopulationByDistance(populationDots, stops);
 
-  // 1. Add Sources First
+  // Register Map Sources
   map.addSource("population-dots", { type: "geojson", data: populationDots });
   map.addSource("stops", { type: "geojson", data: stops });
   map.addSource("route", { type: "geojson", data: routesGeoJson });
   map.addSource("key-places", { type: "geojson", data: "/data/key-places.geojson" });
 
-  // 2. Add Route Polyline & Label Layers
+  // Add Route Line Layer
   map.addLayer({
     id: "route-layer",
     type: "line",
@@ -364,7 +376,7 @@ map.on("load", async () => {
     }
   });
 
-  // 3. Add Population Dots Layer
+  // Add Population Layer
   map.addLayer({
     id: "population-dots-layer",
     type: "circle",
@@ -389,9 +401,9 @@ map.on("load", async () => {
     }
   });
 
-  // 4. Add Frequency Circles Layer (Sized & Colored by 'departures')
+  // ADD FREQUENCY LAYER: Dynamic circle radius and color based on 'departures' calculated from stop_times.txt
   map.addLayer({
-    id: "stop-frequency-layer",
+    id: "stops-layer",
     type: "circle",
     source: "stops",
     paint: {
@@ -399,11 +411,11 @@ map.on("load", async () => {
         "interpolate",
         ["linear"],
         ["get", "departures"],
-        0, 2,
-        5, 4,
-        20, 8,
-        50, 13,
-        100, 18
+        0, 3,
+        5, 5,
+        15, 8,
+        40, 12,
+        80, 16
       ],
       "circle-color": [
         "interpolate",
@@ -411,13 +423,13 @@ map.on("load", async () => {
         ["get", "departures"],
         0, "#94a3b8",
         5, "#f59e0b",
-        20, "#ef4444",
-        50, "#8b5cf6",
-        100, "#15803d"
+        15, "#ef4444",
+        40, "#8b5cf6",
+        80, "#15803d"
       ],
-      "circle-opacity": 0.85,
+      "circle-opacity": 0.9,
       "circle-stroke-color": "#ffffff",
-      "circle-stroke-width": 1.2
+      "circle-stroke-width": 1.5
     }
   });
 
@@ -440,21 +452,23 @@ map.on("load", async () => {
   map.moveLayer("route-layer", "population-dots-layer");
 
   // Popup Interaction
-  map.on("click", "stop-frequency-layer", (e) => {
+  map.on("click", "stops-layer", (e) => {
     const stop = e.features[0];
     const p = stop.properties;
 
     new Popup()
       .setLngLat(e.lngLat)
       .setHTML(`
-        <strong>${p.stop_name}</strong>
-        <p style="margin: 4px 0 0;">Daily departures: <b>${p.departures}</b></p>
-        <p style="margin: 2px 0 0;">Routes serving stop: <b>${p.routeCount}</b></p>
-        <p style="margin: 2px 0 0;">Avg headway: <b>${
-          p.averageHeadway === null || p.averageHeadway === undefined
-            ? "N/A"
-            : Math.round(p.averageHeadway) + " min"
-        }</b></p>
+        <div style="font-family: sans-serif; padding: 4px;">
+          <strong style="font-size: 14px;">${p.stop_name}</strong>
+          <p style="margin: 6px 0 2px;">Daily departures: <b style="color:#15803d;">${p.departures}</b></p>
+          <p style="margin: 2px 0;">Routes serving stop: <b>${p.routeCount}</b></p>
+          <p style="margin: 2px 0 0;">Avg headway: <b>${
+            p.averageHeadway === null || p.averageHeadway === undefined
+              ? "N/A"
+              : Math.round(p.averageHeadway) + " min"
+          }</b></p>
+        </div>
       `)
       .addTo(map);
   });
@@ -463,6 +477,7 @@ map.on("load", async () => {
   routeSelect.addEventListener("change", async (e) => {
     const selectedRouteId = e.target.value;
 
+    // Filter polyline shapes
     if (selectedRouteId === "ALL") {
       map.setFilter("route-layer", null);
       map.setFilter("route-number-layer", null);
@@ -472,8 +487,10 @@ map.on("load", async () => {
       map.setFilter("route-number-layer", filterExpr);
     }
 
-    // Recalculate frequency metrics specifically for the chosen route
-    const updatedStops = await calculateStopFrequencies(stops, dateString, selectedRouteId);
+    // Recalculate frequencies for the filtered route from stop_times.txt
+    const updatedStops = await calculateStopFrequencies(rawStops, dateString, selectedRouteId);
+    
+    // Push updated feature collection to map source
     map.getSource("stops").setData(updatedStops);
   });
 });
