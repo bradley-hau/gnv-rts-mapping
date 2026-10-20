@@ -856,10 +856,7 @@ function renderSummary() {
       { className: "route-summary__title" },
       el("h3", {}, `${selectedCount} Route${selectedCount > 1 ? "s" : ""} Selected`)
     ),
-    el("dl", {}, [
-      [el("dt", {}, "Stops served"), el("dd", {}, String(totalStops))],
-      [el("dt", {}, `Combined daily trips`), el("dd", {}, String(totalTrips))]
-    ]),
+
     el(
       "div",
       { className: "route-summary__actions" },
