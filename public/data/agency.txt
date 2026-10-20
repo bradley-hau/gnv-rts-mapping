@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_phone,agency_fare_url,agency_lang,agency_email
+4030,Regional Transit System,http://www.go-rts.com/,America/New_York,(352) 334-2600,https://go-rts.com/fares-and-passes/,en,walkerrt@cityofgainesville.org

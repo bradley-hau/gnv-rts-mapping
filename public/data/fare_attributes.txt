@@ -1,0 +1,2 @@
+fare_id,price,currency_type,payment_method,transfers,transfer_duration,agency_id
+Regular Fare,1.5,USD,0,0,,4030

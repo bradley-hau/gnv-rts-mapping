@@ -1,0 +1,6 @@
+service_id,start_date,end_date,monday,tuesday,wednesday,thursday,friday,saturday,sunday
+Sunday,20260823,20270502,0,0,0,0,0,0,1
+M-Th,20260820,20270429,1,1,1,1,0,0,0
+Weekday,20260820,20270430,1,1,1,1,1,0,0
+Reduced,20260817,20270319,1,1,1,1,1,0,0
+Saturday,20260822,20270501,0,0,0,0,0,1,0
