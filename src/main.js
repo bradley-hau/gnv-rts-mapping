@@ -12,8 +12,7 @@ setWorkerUrl(workerUrl);
 // ---------------------------------------------------------------------------
 const SERVICE_DATE = "2026-10-20"; // Must fall inside your GTFS feed's calendar range
 const PEOPLE_PER_DOT = 10;
-const ALL = "ALL";
-const NO_MATCH = ["==", ["get", "route_id"], "\u0000"]; // a filter that matches nothing
+const NO_MATCH = ["==", ["get", "route_id"], "\u0000"];
 
 const DATE_LABEL = new Date(`${SERVICE_DATE}T12:00:00Z`).toLocaleDateString(undefined, {
   weekday: "short",
@@ -23,26 +22,26 @@ const DATE_LABEL = new Date(`${SERVICE_DATE}T12:00:00Z`).toLocaleDateString(unde
 });
 
 const state = {
-  selectedRouteId: ALL,
+  selectedRouteIds: new Set(), // Set of selected route IDs (empty = ALL)
   searchText: "",
   distanceToSelectedOnly: false
 };
 
-// Filled in once the data loads
-let routes = []; // sorted: [{ id, shortName, longName, color, textColor }]
+// Data state
+let routes = [];
 const routeById = new Map();
 const routeOrder = new Map();
 let routesGeoJson = null;
-let baseStops = null; // raw stops from stops.txt
-let allStops = null; // every stop, with stats across all routes
-let currentStops = null; // the stops currently drawn on the map
-let serviceIndex = null; // per-stop and per-route service stats for SERVICE_DATE
+let baseStops = null;
+let allStops = null;
+let currentStops = null;
+let serviceIndex = null;
 let populationDots = null;
 let lastDistanceKey = null;
 let activePopup = null;
 
 // ---------------------------------------------------------------------------
-// 1. App markup
+// 1. App Markup
 // ---------------------------------------------------------------------------
 document.querySelector("#app").innerHTML = `
   <div id="map"></div>
@@ -52,7 +51,10 @@ document.querySelector("#app").innerHTML = `
     <section class="route-filter" aria-labelledby="route-filter-heading">
       <div class="route-filter__header">
         <h2 id="route-filter-heading">Routes</h2>
-        <button type="button" id="route-clear" class="pill-button" hidden>Show all routes</button>
+        <div class="route-filter__actions">
+          <button type="button" id="route-select-all" class="pill-button">Select all</button>
+          <button type="button" id="route-clear" class="pill-button" hidden>Clear selection</button>
+        </div>
       </div>
       <label class="visually-hidden" for="route-search">Search routes by number or name</label>
       <input id="route-search" type="search" placeholder="Search by number or name…" autocomplete="off" disabled />
@@ -61,13 +63,13 @@ document.querySelector("#app").innerHTML = `
       </div>
       <p id="route-empty" class="route-status" hidden></p>
       <div id="route-summary" class="route-summary" hidden aria-live="polite"></div>
-      <p class="route-hint">Tip: click a route line on the map to select it. Press Esc to show all routes.</p>
+      <p class="route-hint">Tip: Check multiple routes to compare coverage. Press Esc to reset filters.</p>
     </section>
 
     <h2 id="distance-heading">Distance to Nearest Stop</h2>
     <label id="distance-toggle-wrap" class="distance-toggle" hidden>
       <input type="checkbox" id="distance-toggle" />
-      <span>Measure to this route's stops only</span>
+      <span>Measure to selected routes' stops only</span>
     </label>
     <div class="distance-scale"></div>
     <div class="scale-labels"><span>0 m</span><span>400 m</span><span>800 m</span><span>1.2+ km</span></div>
@@ -85,13 +87,14 @@ const searchEl = document.querySelector("#route-search");
 const routeListEl = document.querySelector("#route-list");
 const routeEmptyEl = document.querySelector("#route-empty");
 const summaryEl = document.querySelector("#route-summary");
+const selectAllBtn = document.querySelector("#route-select-all");
 const clearBtn = document.querySelector("#route-clear");
 const distanceHeading = document.querySelector("#distance-heading");
 const distanceToggleWrap = document.querySelector("#distance-toggle-wrap");
 const distanceToggle = document.querySelector("#distance-toggle");
 
 // ---------------------------------------------------------------------------
-// Small helpers
+// Helpers
 // ---------------------------------------------------------------------------
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -142,7 +145,7 @@ function sortRouteIds(ids) {
 }
 
 // ---------------------------------------------------------------------------
-// GTFS loading
+// GTFS Loading & Parsing
 // ---------------------------------------------------------------------------
 function splitCSVLine(line) {
   if (!line.includes('"')) return line.split(",");
@@ -373,26 +376,29 @@ async function routesToGeoJSON() {
   return { routesGeoJson: { type: "FeatureCollection", features }, routes: routeList };
 }
 
-function buildStopFeatures(routeId) {
+// Builds stop features based on the set of selected route IDs (empty set = ALL)
+function buildStopFeatures(selectedSet) {
   const features = [];
+  const isAll = selectedSet.size === 0;
 
   for (const stop of baseStops.features) {
     const served = serviceIndex.stopRouteTimes.get(stop.properties.stop_id);
-    const routeIds = served ? sortRouteIds([...served.keys()]) : [];
+    if (!served) continue;
+
+    const allRouteIds = sortRouteIds([...served.keys()]);
     let departures = 0;
     let times = [];
+    let matchingRoutesCount = 0;
 
-    if (routeId === ALL) {
-      for (const entry of served?.values() ?? []) {
+    for (const [rId, entry] of served.entries()) {
+      if (isAll || selectedSet.has(rId)) {
         departures += entry.count;
         times = times.concat(entry.times);
+        matchingRoutesCount++;
       }
-    } else {
-      const entry = served?.get(routeId);
-      if (!entry) continue;
-      departures = entry.count;
-      times = [...entry.times];
     }
+
+    if (departures === 0 && !isAll) continue; // Skip stops not served by active selection
 
     times.sort((a, b) => a - b);
 
@@ -402,8 +408,8 @@ function buildStopFeatures(routeId) {
       properties: {
         ...stop.properties,
         departures,
-        routeCount: routeIds.length,
-        routeIds: routeIds.join("|"),
+        routeCount: isAll ? allRouteIds.length : matchingRoutesCount,
+        routeIds: allRouteIds.join("|"),
         averageHeadway: times.length >= 2 ? (times[times.length - 1] - times[0]) / (times.length - 1) : null
       }
     });
@@ -413,7 +419,7 @@ function buildStopFeatures(routeId) {
 }
 
 // ---------------------------------------------------------------------------
-// Population dots
+// Population Dots
 // ---------------------------------------------------------------------------
 function generatePopulationDots(geojson, peoplePerDot = 1) {
   const dots = [];
@@ -464,7 +470,7 @@ function colorPopulationByDistance(dots, stops) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Map
+// 2. Map Setup
 // ---------------------------------------------------------------------------
 const map = new MapLibreMap({
   container: "map",
@@ -505,20 +511,23 @@ async function init() {
   });
   serviceIndex = index;
 
-  allStops = buildStopFeatures(ALL);
+  allStops = buildStopFeatures(new Set());
   currentStops = allStops;
 
   populationDots = generatePopulationDots(censusData, PEOPLE_PER_DOT);
   colorPopulationByDistance(populationDots, allStops);
-  lastDistanceKey = ALL;
+  lastDistanceKey = "ALL";
 
   addSourcesAndLayers();
   wireMapInteractions();
   wireControls();
   renderRouteList();
 
-  const initialRoute = readHashRoute();
-  if (initialRoute !== ALL) selectRoute(initialRoute);
+  const initialRoutes = readHashRoutes();
+  if (initialRoutes.length > 0) {
+    initialRoutes.forEach((id) => state.selectedRouteIds.add(id));
+    updateRouteSelection({ fit: true });
+  }
 }
 
 function addSourcesAndLayers() {
@@ -647,17 +656,24 @@ function addSourcesAndLayers() {
 }
 
 // ---------------------------------------------------------------------------
-// Route selection
+// Multi-Route Selection Logic
 // ---------------------------------------------------------------------------
-function selectRoute(routeId, { fit = true } = {}) {
-  if (routeId !== ALL && !routeById.has(routeId)) routeId = ALL;
-  state.selectedRouteId = routeId;
-  const isAll = routeId === ALL;
+function toggleRoute(routeId) {
+  if (state.selectedRouteIds.has(routeId)) {
+    state.selectedRouteIds.delete(routeId);
+  } else {
+    state.selectedRouteIds.add(routeId);
+  }
+  updateRouteSelection({ fit: false });
+}
 
+function updateRouteSelection({ fit = false } = {}) {
+  const isAll = state.selectedRouteIds.size === 0;
   activePopup?.remove();
 
-  currentStops = isAll ? allStops : buildStopFeatures(routeId);
+  currentStops = isAll ? allStops : buildStopFeatures(state.selectedRouteIds);
   map.getSource("stops").setData(currentStops);
+
   applyRouteSelectionToMap();
   updateDistanceColors();
 
@@ -667,21 +683,28 @@ function selectRoute(routeId, { fit = true } = {}) {
   renderSummary();
   syncHash();
 
-  if (fit && !isAll) fitToRoute(routeId);
+  if (fit && !isAll) fitToSelectedRoutes();
 }
 
 function applyRouteSelectionToMap() {
-  const id = state.selectedRouteId;
-  const isAll = id === ALL;
-  const matchSelected = ["==", ["get", "route_id"], id];
-  const route = routeById.get(id);
+  const isAll = state.selectedRouteIds.size === 0;
 
-  map.setPaintProperty("route-layer", "line-opacity", isAll ? 0.23 : 0.08);
-  map.setFilter("route-selected-casing", isAll ? NO_MATCH : matchSelected);
-  map.setFilter("route-selected-layer", isAll ? NO_MATCH : matchSelected);
-  map.setFilter("route-number-layer", isAll ? null : matchSelected);
-  map.setPaintProperty("route-number-layer", "text-halo-color", isAll ? "#173b65" : route.color);
-  map.setPaintProperty("route-number-layer", "text-color", isAll ? "#ffffff" : route.textColor);
+  if (isAll) {
+    map.setPaintProperty("route-layer", "line-opacity", 0.23);
+    map.setFilter("route-selected-casing", NO_MATCH);
+    map.setFilter("route-selected-layer", NO_MATCH);
+    map.setFilter("route-number-layer", null);
+    map.setPaintProperty("route-number-layer", "text-halo-color", "#173b65");
+    map.setPaintProperty("route-number-layer", "text-color", "#ffffff");
+  } else {
+    const selectedArray = Array.from(state.selectedRouteIds);
+    const filterMatch = ["in", ["get", "route_id"], ["literal", selectedArray]];
+
+    map.setPaintProperty("route-layer", "line-opacity", 0.08);
+    map.setFilter("route-selected-casing", filterMatch);
+    map.setFilter("route-selected-layer", filterMatch);
+    map.setFilter("route-number-layer", filterMatch);
+  }
 }
 
 function fitPadding() {
@@ -701,8 +724,10 @@ function fitPadding() {
   return padding;
 }
 
-function fitToRoute(routeId) {
-  const shapes = routesGeoJson.features.filter((f) => f.properties.route_id === routeId);
+function fitToSelectedRoutes() {
+  if (state.selectedRouteIds.size === 0) return;
+  const selectedArray = Array.from(state.selectedRouteIds);
+  const shapes = routesGeoJson.features.filter((f) => selectedArray.includes(f.properties.route_id));
   const target = shapes.length ? { type: "FeatureCollection", features: shapes } : currentStops;
   if (!target.features.length) return;
 
@@ -717,32 +742,38 @@ function fitToRoute(routeId) {
 }
 
 function updateDistanceColors() {
-  const useRoute = state.distanceToSelectedOnly && state.selectedRouteId !== ALL;
-  const key = useRoute ? state.selectedRouteId : ALL;
+  const useSelected = state.distanceToSelectedOnly && state.selectedRouteIds.size > 0;
+  const key = useSelected ? Array.from(state.selectedRouteIds).sort().join(",") : "ALL";
 
-  distanceHeading.textContent = useRoute
-    ? `Distance to Nearest ${routeLabel(routeById.get(key))} Stop`
+  distanceHeading.textContent = useSelected
+    ? `Distance to Selected Routes' Stops`
     : "Distance to Nearest Stop";
 
   if (key === lastDistanceKey) return;
-  colorPopulationByDistance(populationDots, useRoute ? currentStops : allStops);
+  colorPopulationByDistance(populationDots, useSelected ? currentStops : allStops);
   map.getSource("population-dots").setData(populationDots);
   lastDistanceKey = key;
 }
 
-function readHashRoute() {
-  const match = location.hash.match(/route=([^&]+)/);
-  return match ? decodeURIComponent(match[1]) : ALL;
+function readHashRoutes() {
+  const match = location.hash.match(/routes=([^&]+)/);
+  if (!match) return [];
+  return decodeURIComponent(match[1]).split(",").filter((id) => routeById.has(id));
 }
 
 function syncHash() {
   const url = new URL(location.href);
-  url.hash = state.selectedRouteId === ALL ? "" : `route=${encodeURIComponent(state.selectedRouteId)}`;
+  if (state.selectedRouteIds.size === 0) {
+    url.hash = "";
+  } else {
+    const ids = Array.from(state.selectedRouteIds).sort().join(",");
+    url.hash = `routes=${encodeURIComponent(ids)}`;
+  }
   history.replaceState(null, "", url);
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar UI
+// Sidebar UI & List Rendering
 // ---------------------------------------------------------------------------
 function renderRouteList() {
   const query = state.searchText.trim().toLowerCase();
@@ -757,24 +788,35 @@ function renderRouteList() {
   routeListEl.replaceChildren(
     ...matches.map((route) => {
       const trips = serviceIndex.routeStats.get(route.id)?.tripCount || 0;
-      const isSelected = route.id === state.selectedRouteId;
+      const isSelected = state.selectedRouteIds.has(route.id);
+
+      const checkbox = el("input", {
+        type: "checkbox",
+        checked: isSelected,
+        ariaLabel: `Select ${routeLabel(route)}`
+      });
+
       const item = el(
-        "button",
+        "label",
         {
-          type: "button",
-          className: `route-item${trips ? "" : " is-inactive"}`,
-          "aria-pressed": String(isSelected),
+          className: `route-item${trips ? "" : " is-inactive"}${isSelected ? " is-selected" : ""}`,
           "data-route-id": route.id,
           title: trips
             ? `${routeLabel(route)}: ${trips} trips on ${DATE_LABEL}`
-            : `${routeLabel(route)}: no trips scheduled on ${DATE_LABEL}`,
-          onClick: () => selectRoute(route.id === state.selectedRouteId ? ALL : route.id)
+            : `${routeLabel(route)}: no trips scheduled on ${DATE_LABEL}`
         },
+        checkbox,
         routeBadge(route),
         el("span", { className: "route-item__name" }, route.longName || routeLabel(route)),
         el("span", { className: "route-item__meta" }, trips ? `${trips} trips` : "No service")
       );
+
       item.style.setProperty("--route-color", route.color);
+
+      checkbox.addEventListener("change", () => {
+        toggleRoute(route.id);
+      });
+
       return item;
     })
   );
@@ -785,53 +827,43 @@ function renderRouteList() {
 
 function updateRouteListSelection() {
   for (const item of routeListEl.querySelectorAll(".route-item")) {
-    item.setAttribute("aria-pressed", String(item.dataset.routeId === state.selectedRouteId));
+    const id = item.dataset.routeId;
+    const isSelected = state.selectedRouteIds.has(id);
+    const checkbox = item.querySelector('input[type="checkbox"]');
+    if (checkbox) checkbox.checked = isSelected;
+    item.classList.toggle("is-selected", isSelected);
   }
-  routeListEl.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: "nearest" });
 }
 
 function renderSummary() {
-  const id = state.selectedRouteId;
-  if (id === ALL) {
+  const selectedCount = state.selectedRouteIds.size;
+  if (selectedCount === 0) {
     summaryEl.hidden = true;
     summaryEl.replaceChildren();
     return;
   }
 
-  const route = routeById.get(id);
-  const stats = serviceIndex.routeStats.get(id);
-  const hasTrips = Boolean(stats?.tripCount);
+  let totalTrips = 0;
+  let totalStops = currentStops.features.length;
 
-  const rows = [
-    ["Stops served", String(currentStops.features.length)],
-    [`Trips on ${DATE_LABEL}`, hasTrips ? String(stats.tripCount) : "None scheduled"]
-  ];
-  if (hasTrips && Number.isFinite(stats.first)) {
-    rows.push(["Service hours", `${formatClock(stats.first)} – ${formatClock(stats.last)}`]);
-  }
-  if (hasTrips && stats.avgGap !== null) {
-    rows.push(["Avg. time between buses", `~${Math.round(stats.avgGap)} min`]);
-  }
+  state.selectedRouteIds.forEach((id) => {
+    totalTrips += serviceIndex.routeStats.get(id)?.tripCount || 0;
+  });
 
-  summaryEl.style.setProperty("--route-color", route.color);
   summaryEl.replaceChildren(
     el(
       "div",
       { className: "route-summary__title" },
-      routeBadge(route),
-      el("h3", {}, route.longName || routeLabel(route))
+      el("h3", {}, `${selectedCount} Route${selectedCount > 1 ? "s" : ""} Selected`)
     ),
-    el("dl", {}, rows.map(([label, value]) => [el("dt", {}, label), el("dd", {}, value)])),
-    hasTrips && stats.avgGap !== null
-      ? el("p", { className: "route-summary__note" }, "Time between buses is averaged over the full service day, per direction.")
-      : null,
-    !hasTrips
-      ? el("p", { className: "route-summary__note" }, `This route has no trips on ${DATE_LABEL}, so no stops are shown.`)
-      : null,
+    el("dl", {}, [
+      [el("dt", {}, "Stops served"), el("dd", {}, String(totalStops))],
+      [el("dt", {}, `Combined daily trips`), el("dd", {}, String(totalTrips))]
+    ]),
     el(
       "div",
       { className: "route-summary__actions" },
-      el("button", { type: "button", className: "pill-button", onClick: () => fitToRoute(id) }, "Zoom to route")
+      el("button", { type: "button", className: "pill-button", onClick: fitToSelectedRoutes }, "Zoom to selection")
     )
   );
   summaryEl.hidden = false;
@@ -845,34 +877,15 @@ function wireControls() {
     renderRouteList();
   });
 
-  searchEl.addEventListener("keydown", (e) => {
-    const first = routeListEl.querySelector(".route-item");
-    if (e.key === "Enter" && first) {
-      e.preventDefault();
-      selectRoute(first.dataset.routeId);
-    } else if (e.key === "ArrowDown" && first) {
-      e.preventDefault();
-      first.focus();
-    } else if (e.key === "Escape" && searchEl.value) {
-      e.preventDefault();
-      searchEl.value = "";
-      state.searchText = "";
-      renderRouteList();
-    }
+  selectAllBtn.addEventListener("click", () => {
+    routes.forEach((r) => state.selectedRouteIds.add(r.id));
+    updateRouteSelection({ fit: true });
   });
 
-  routeListEl.addEventListener("keydown", (e) => {
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
-    const items = [...routeListEl.querySelectorAll(".route-item")];
-    const i = items.indexOf(document.activeElement);
-    if (i === -1) return;
-    e.preventDefault();
-    if (e.key === "ArrowUp" && i === 0) return searchEl.focus();
-    const next = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: items.length - 1 }[e.key];
-    items[Math.min(Math.max(next, 0), items.length - 1)].focus();
+  clearBtn.addEventListener("click", () => {
+    state.selectedRouteIds.clear();
+    updateRouteSelection({ fit: false });
   });
-
-  clearBtn.addEventListener("click", () => selectRoute(ALL));
 
   distanceToggle.addEventListener("change", () => {
     state.distanceToSelectedOnly = distanceToggle.checked;
@@ -882,17 +895,21 @@ function wireControls() {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || e.defaultPrevented) return;
     if (activePopup) return activePopup.remove();
-    if (state.selectedRouteId !== ALL) selectRoute(ALL);
+    if (state.selectedRouteIds.size > 0) {
+      state.selectedRouteIds.clear();
+      updateRouteSelection({ fit: false });
+    }
   });
 
   window.addEventListener("hashchange", () => {
-    const id = readHashRoute();
-    if (id !== state.selectedRouteId) selectRoute(id);
+    const ids = readHashRoutes();
+    state.selectedRouteIds = new Set(ids);
+    updateRouteSelection({ fit: false });
   });
 }
 
 // ---------------------------------------------------------------------------
-// Map interactions
+// Map Interactions & Popups
 // ---------------------------------------------------------------------------
 function openPopup(lngLat, content) {
   activePopup?.remove();
@@ -909,11 +926,12 @@ function routeChips(routeIds) {
     { className: "popup-routes" },
     routeIds.map((id) => {
       const route = routeById.get(id);
+      const isSelected = state.selectedRouteIds.has(id);
       return routeBadge(route, "button", {
         type: "button",
-        title: `Show ${routeLabel(route)}${route.longName ? ` – ${route.longName}` : ""}`,
-        "aria-pressed": String(id === state.selectedRouteId),
-        onClick: () => selectRoute(id)
+        title: `Toggle ${routeLabel(route)}${route.longName ? ` – ${route.longName}` : ""}`,
+        "aria-pressed": String(isSelected),
+        onClick: () => toggleRoute(id)
       });
     })
   );
@@ -922,7 +940,7 @@ function routeChips(routeIds) {
 function showStopPopup(feature, lngLat) {
   const p = feature.properties;
   const routeIds = p.routeIds ? String(p.routeIds).split("|").filter((id) => routeById.has(id)) : [];
-  const selected = state.selectedRouteId === ALL ? null : routeById.get(state.selectedRouteId);
+  const hasFilter = state.selectedRouteIds.size > 0;
   const headway = typeof p.averageHeadway === "number" ? `${Math.round(p.averageHeadway)} min` : "N/A";
 
   openPopup(
@@ -931,7 +949,7 @@ function showStopPopup(feature, lngLat) {
       "div",
       { className: "map-popup" },
       el("strong", {}, p.stop_name || "Bus stop"),
-      el("p", {}, selected ? `${routeLabel(selected)} departures: ` : "Daily departures: ", el("b", {}, String(p.departures ?? 0))),
+      el("p", {}, hasFilter ? "Selected departures: " : "Daily departures: ", el("b", {}, String(p.departures ?? 0))),
       el("p", {}, "Avg headway: ", el("b", {}, headway)),
       el("p", {}, "Routes serving stop: ", el("b", {}, String(p.routeCount ?? 0))),
       routeIds.length ? routeChips(routeIds) : null
@@ -951,7 +969,7 @@ function wireMapInteractions() {
     ].filter((id) => routeById.has(id));
 
     if (routeIds.length === 1) {
-      selectRoute(routeIds[0]);
+      toggleRoute(routeIds[0]);
     } else if (routeIds.length > 1) {
       openPopup(
         e.lngLat,
@@ -959,7 +977,7 @@ function wireMapInteractions() {
           "div",
           { className: "map-popup" },
           el("strong", {}, `${routeIds.length} routes run here`),
-          el("p", { className: "map-popup__hint" }, "Pick one to highlight it:"),
+          el("p", { className: "map-popup__hint" }, "Click a route to toggle selection:"),
           routeChips(sortRouteIds(routeIds))
         )
       );

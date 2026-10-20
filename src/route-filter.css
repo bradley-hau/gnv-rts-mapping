@@ -77,26 +77,7 @@
   margin: 0 -2px;
 }
 
-.route-item {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  font: inherit;
-  font-size: 13px;
-  color: inherit;
-  text-align: left;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  cursor: pointer;
-}
 
-.route-item:hover {
-  background: #f1f5f9;
-}
 
 .route-item[aria-pressed="true"] {
   background: #f8fafc;
@@ -238,4 +219,37 @@
   .route-list {
     max-height: 150px;
   }
+}
+
+
+.route-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
+}
+
+.route-item:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.route-item.is-selected {
+  background-color: rgba(23, 59, 101, 0.1);
+  font-weight: 600;
+}
+
+.route-item input[type="checkbox"] {
+  accent-color: var(--route-color, #173b65);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.route-filter__actions {
+  display: flex;
+  gap: 6px;
 }
