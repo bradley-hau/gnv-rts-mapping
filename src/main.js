@@ -6,15 +6,15 @@ import * as turf from "@turf/turf";
 
 setWorkerUrl(workerUrl);
 
-// 1. Render App Markup including Route Filter UI
+// Render HTML layout with legend and route selector
 document.querySelector("#app").innerHTML = `
   <div id="map"></div>
   <aside class="legend" aria-label="Map legend">
     <h1>Transit Access</h1>
-    
-    <h2>Filter Routes</h2>
-    <div id="route-filter-container">
-      <select id="route-select">
+
+    <h2>Filter by Route</h2>
+    <div style="margin-bottom: 12px;">
+      <select id="route-select" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ccc;">
         <option value="ALL">All Routes</option>
       </select>
     </div>
@@ -34,13 +34,15 @@ document.querySelector("#app").innerHTML = `
 
 function parseCSV(text) {
   const lines = text.trim().split("\n");
+  if (lines.length < 2) return [];
+
   const headers = lines[0].trim().split(",").map((h) => h.trim());
 
   return lines.slice(1).map((line) => {
     const values = line.trim().split(",").map((v) => v.trim());
     const row = {};
     headers.forEach((header, i) => {
-      row[header] = values[i];
+      row[header] = values[i] !== undefined ? values[i] : "";
     });
     return row;
   });
@@ -87,7 +89,7 @@ function gtfsTimeToMinutes(time) {
   return parts[0] * 60 + parts[1] + parts[2] / 60;
 }
 
-async function calculateStopFrequencies(stops, dateString, selectedRouteId = "ALL") {
+async function calculateStopFrequencies(stopsGeoJson, dateString, selectedRouteId = "ALL") {
   const [stopTimesRes, tripsRes, calendarRes, exceptionsRes] = await Promise.all([
     fetch("/data/stop_times.txt"),
     fetch("/data/trips.txt"),
@@ -95,12 +97,17 @@ async function calculateStopFrequencies(stops, dateString, selectedRouteId = "AL
     fetch("/data/calendar_dates.txt")
   ]);
 
-  const [stopTimes, trips, calendar, exceptions] = await Promise.all([
-    stopTimesRes.text().then(parseCSV),
-    tripsRes.text().then(parseCSV),
-    calendarRes.text().then(parseCSV),
-    exceptionsRes.text().then(parseCSV)
+  const [stopTimesText, tripsText, calendarText, exceptionsText] = await Promise.all([
+    stopTimesRes.text(),
+    tripsRes.text(),
+    calendarRes.text(),
+    exceptionsRes.text()
   ]);
+
+  const stopTimes = parseCSV(stopTimesText);
+  const trips = parseCSV(tripsText);
+  const calendar = parseCSV(calendarText);
+  const exceptions = parseCSV(exceptionsText);
 
   const activeServices = getActiveServices(calendar, exceptions, dateString);
   const tripLookup = new Map();
@@ -135,7 +142,8 @@ async function calculateStopFrequencies(stops, dateString, selectedRouteId = "AL
     stats.routes.add(trip.route_id);
   }
 
-  stops.features.forEach((stop) => {
+  // Assign explicitly typed Numbers to properties for MapLibre expressions
+  for (const stop of stopsGeoJson.features) {
     const stats = stopStats.get(stop.properties.stop_id);
     const times = stats?.times.sort((a, b) => a - b) || [];
 
@@ -144,12 +152,12 @@ async function calculateStopFrequencies(stops, dateString, selectedRouteId = "AL
       averageHeadway = (times[times.length - 1] - times[0]) / (times.length - 1);
     }
 
-    stop.properties.departures = times.length;
-    stop.properties.routeCount = stats?.routes.size || 0;
-    stop.properties.averageHeadway = averageHeadway;
-  });
+    stop.properties.departures = Number(times.length);
+    stop.properties.routeCount = Number(stats?.routes.size || 0);
+    stop.properties.averageHeadway = averageHeadway !== null ? Number(averageHeadway) : null;
+  }
 
-  return stops;
+  return stopsGeoJson;
 }
 
 function generatePopulationDots(geojson, peoplePerDot = 1) {
@@ -175,10 +183,7 @@ function generatePopulationDots(geojson, peoplePerDot = 1) {
     }
   }
 
-  return {
-    type: "FeatureCollection",
-    features: dots
-  };
+  return { type: "FeatureCollection", features: dots };
 }
 
 function colorPopulationByDistance(dots, stops) {
@@ -213,8 +218,8 @@ async function stopsToGeoJson() {
   const features = rows.map((row) => ({
     type: "Feature",
     properties: {
-      stop_id: row.stop_id,
-      stop_name: row.stop_name
+      stop_id: String(row.stop_id),
+      stop_name: String(row.stop_name || "")
     },
     geometry: {
       type: "Point",
@@ -273,9 +278,9 @@ async function routesToGeoJSON() {
       properties: {
         shape_id: shapeId,
         route_id: routeId,
-        route_short_name: info.shortName,
-        route_long_name: info.longName,
-        route_color: `#${info.color}`
+        route_short_name: info.shortName || "",
+        route_long_name: info.longName || "",
+        route_color: `#${info.color || "FF9500"}`
       },
       geometry: {
         type: "LineString",
@@ -290,7 +295,7 @@ async function routesToGeoJSON() {
   };
 }
 
-// 2. Map Initialization
+// Maplibre initialization
 const map = new MapLibreMap({
   container: "map",
   style: "https://tiles.openfreemap.org/styles/positron",
@@ -307,28 +312,28 @@ map.on("load", async () => {
 
   // Populate Dropdown Options
   const routeSelect = document.querySelector("#route-select");
-  routeList.sort((a, b) => a.route_short_name.localeCompare(b.route_short_name, undefined, { numeric: true }));
+  routeList.sort((a, b) => (a.route_short_name || "").localeCompare(b.route_short_name || "", undefined, { numeric: true }));
   routeList.forEach((r) => {
     const opt = document.createElement("option");
     opt.value = r.route_id;
-    opt.textContent = `Route ${r.route_short_name} - ${r.route_long_name}`;
+    opt.textContent = `Route ${r.route_short_name || r.route_id} - ${r.route_long_name || ""}`;
     routeSelect.appendChild(opt);
   });
 
-  // Calculate default stop departure stats
-  const dateString = "2026-10-20"; // Update to match your GTFS feed calendar range
+  // Calculate default frequency values for stops (Adjust date to match your feed calendar)
+  const dateString = "2026-10-20";
   const stops = await calculateStopFrequencies(rawStops, dateString, "ALL");
 
   const populationDots = generatePopulationDots(censusData, 10);
   colorPopulationByDistance(populationDots, stops);
 
-  // Sources
+  // 1. Add Sources First
   map.addSource("population-dots", { type: "geojson", data: populationDots });
   map.addSource("stops", { type: "geojson", data: stops });
   map.addSource("route", { type: "geojson", data: routesGeoJson });
   map.addSource("key-places", { type: "geojson", data: "/data/key-places.geojson" });
 
-  // Route Layers
+  // 2. Add Route Polyline & Label Layers
   map.addLayer({
     id: "route-layer",
     type: "line",
@@ -359,7 +364,7 @@ map.on("load", async () => {
     }
   });
 
-  // Population Dots Layer
+  // 3. Add Population Dots Layer
   map.addLayer({
     id: "population-dots-layer",
     type: "circle",
@@ -384,7 +389,7 @@ map.on("load", async () => {
     }
   });
 
-  // Stop Frequency Visual Layer
+  // 4. Add Frequency Circles Layer (Sized & Colored by 'departures')
   map.addLayer({
     id: "stop-frequency-layer",
     type: "circle",
@@ -395,19 +400,19 @@ map.on("load", async () => {
         ["linear"],
         ["get", "departures"],
         0, 2,
-        10, 5,
-        30, 9,
-        60, 14,
-        100, 19
+        5, 4,
+        20, 8,
+        50, 13,
+        100, 18
       ],
       "circle-color": [
         "interpolate",
         ["linear"],
         ["get", "departures"],
         0, "#94a3b8",
-        10, "#f59e0b",
-        30, "#ef4444",
-        60, "#8b5cf6",
+        5, "#f59e0b",
+        20, "#ef4444",
+        50, "#8b5cf6",
         100, "#15803d"
       ],
       "circle-opacity": 0.85,
@@ -416,7 +421,7 @@ map.on("load", async () => {
     }
   });
 
-  // Key Places
+  // Key Places Layer
   map.addLayer({
     id: "key-places-layer",
     type: "symbol",
@@ -446,13 +451,15 @@ map.on("load", async () => {
         <p style="margin: 4px 0 0;">Daily departures: <b>${p.departures}</b></p>
         <p style="margin: 2px 0 0;">Routes serving stop: <b>${p.routeCount}</b></p>
         <p style="margin: 2px 0 0;">Avg headway: <b>${
-          p.averageHeadway === null ? "N/A" : Math.round(p.averageHeadway) + " min"
+          p.averageHeadway === null || p.averageHeadway === undefined
+            ? "N/A"
+            : Math.round(p.averageHeadway) + " min"
         }</b></p>
       `)
       .addTo(map);
   });
 
-  // Route Selection Filter Listener
+  // Route Selection Filter Event Listener
   routeSelect.addEventListener("change", async (e) => {
     const selectedRouteId = e.target.value;
 
@@ -465,7 +472,7 @@ map.on("load", async () => {
       map.setFilter("route-number-layer", filterExpr);
     }
 
-    // Recalculate stop frequencies for selected route
+    // Recalculate frequency metrics specifically for the chosen route
     const updatedStops = await calculateStopFrequencies(stops, dateString, selectedRouteId);
     map.getSource("stops").setData(updatedStops);
   });
