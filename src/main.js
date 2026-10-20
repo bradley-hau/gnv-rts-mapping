@@ -1,8 +1,135 @@
-import { Map, setWorkerUrl } from "maplibre-gl";
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+import { Map, Popup, setWorkerUrl } from "maplibre-gl";import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 import * as turf from "@turf/turf";
+
+
+
+function getActiveServices(calendarRows, exceptionRows, dateString) {
+  const date = new Date(`${dateString}T12:00:00Z`);
+  const dayName = [
+    "sunday", "monday", "tuesday", "wednesday",
+    "thursday", "friday", "saturday"
+  ][date.getUTCDay()];
+
+  const gtfsDate = dateString.replaceAll("-", "");
+  const active = new Set();
+
+  for (const row of calendarRows) {
+    if (
+      row[dayName] === "1" &&
+      gtfsDate >= row.start_date &&
+      gtfsDate <= row.end_date
+    ) {
+      active.add(row.service_id);
+    }
+  }
+
+  // Overrides from calendar_dates.txt.
+  for (const row of exceptionRows) {
+    if (row.date !== gtfsDate) continue;
+
+    if (row.exception_type === "1") {
+      active.add(row.service_id);
+    } else if (row.exception_type === "2") {
+      active.delete(row.service_id);
+    }
+  }
+
+  return active;
+}
+
+function gtfsTimeToMinutes(time) {
+  if (!time) return null;
+
+  const parts = time.split(":").map(Number);
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) {
+    return null;
+  }
+
+  return parts[0] * 60 + parts[1] + parts[2] / 60;
+}
+
+async function addStopFrequencies(stops, dateString) {
+  const [stopTimesRes, tripsRes, calendarRes, exceptionsRes] =
+    await Promise.all([
+      fetch("/data/stop_times.txt"),
+      fetch("/data/trips.txt"),
+      fetch("/data/calendar.txt"),
+      fetch("/data/calendar_dates.txt")
+    ]);
+
+  for (const response of [
+    stopTimesRes, tripsRes, calendarRes, exceptionsRes
+  ]) {
+    if (!response.ok) {
+      throw new Error(`Could not load ${response.url}`);
+    }
+  }
+
+  const [stopTimes, trips, calendar, exceptions] = await Promise.all([
+    stopTimesRes.text().then(parseCSV),
+    tripsRes.text().then(parseCSV),
+    calendarRes.text().then(parseCSV),
+    exceptionsRes.text().then(parseCSV)
+  ]);
+
+  const activeServices = getActiveServices(
+    calendar, exceptions, dateString
+  );
+
+  const tripLookup = new Map();
+
+  for (const trip of trips) {
+    if (activeServices.has(trip.service_id)) {
+      tripLookup.set(trip.trip_id, trip);
+    }
+  }
+
+  const stopStats = new Map();
+
+  for (const row of stopTimes) {
+    const trip = tripLookup.get(row.trip_id);
+    if (!trip) continue;
+
+    // GTFS pickup_type=1 means no regular pickup.
+    if (row.pickup_type === "1") continue;
+
+    const minutes = gtfsTimeToMinutes(row.departure_time);
+    if (minutes === null) continue;
+
+    if (!stopStats.has(row.stop_id)) {
+      stopStats.set(row.stop_id, {
+        times: [],
+        routes: new Set()
+      });
+    }
+
+    const stats = stopStats.get(row.stop_id);
+    stats.times.push(minutes);
+    stats.routes.add(trip.route_id);
+  }
+
+  for (const stop of stops.features) {
+    const stats = stopStats.get(stop.properties.stop_id);
+    const times = stats?.times.sort((a, b) => a - b) || [];
+
+    let averageHeadway = null;
+
+    if (times.length >= 2) {
+      averageHeadway =
+        (times[times.length - 1] - times[0]) /
+        (times.length - 1);
+    }
+
+    stop.properties.departures = times.length;
+    stop.properties.routeCount = stats?.routes.size || 0;
+    stop.properties.averageHeadway = averageHeadway;
+  }
+
+  return stops;
+}
+
 
 setWorkerUrl(workerUrl);
 
@@ -231,6 +358,61 @@ map.on("load", async () => {
     type: "geojson",
     data: populationDots,
   });
+
+
+map.addLayer({
+  id: "stop-frequency-layer",
+  type: "circle",
+  source: "stops",
+
+  paint: {
+    "circle-radius": [
+      "interpolate",
+      ["linear"],
+      ["get", "departures"],
+      0, 3,
+      10, 5,
+      30, 9,
+      60, 14,
+      100, 19
+    ],
+
+    "circle-color": [
+      "interpolate",
+      ["linear"],
+      ["get", "departures"],
+      0, "#94a3b8",
+      10, "#f59e0b",
+      30, "#ef4444",
+      60, "#8b5cf6",
+      100, "#15803d"
+    ],
+
+    "circle-opacity": 0.8,
+    "circle-stroke-color": "#ffffff",
+    "circle-stroke-width": 1
+  }
+});
+
+// Click a stop to see service statistics.
+map.on("click", "stop-frequency-layer", (e) => {
+  const stop = e.features[0];
+  const p = stop.properties;
+
+  new Popup()
+    .setLngLat(e.lngLat)
+    .setHTML(`
+      <strong>${p.stop_name}</strong>
+      <p>Daily departures: ${p.departures}</p>
+      <p>Routes serving stop: ${p.routeCount}</p>
+      <p>Average headway: ${
+        p.averageHeadway === null
+          ? "N/A"
+          : Math.round(p.averageHeadway) + " min"
+      }</p>
+    `)
+    .addTo(map);
+});
 
   map.addLayer({
     id: "population-dots-layer",
