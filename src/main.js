@@ -24,6 +24,7 @@ const DATE_LABEL = new Date(`${SERVICE_DATE}T12:00:00Z`).toLocaleDateString(unde
 const state = {
   selectedRouteIds: new Set(), // Set of selected route IDs (empty = ALL)
   searchText: "",
+  timeMinutes: 0,
   distanceToSelectedOnly: false
 };
 
@@ -47,6 +48,18 @@ document.querySelector("#app").innerHTML = `
   <div id="map"></div>
   <aside class="legend" aria-label="Map controls and legend">
     <h1>Transit Access</h1>
+
+    <section class="time-filter" aria-labelledby="time-heading">
+      <div class="route-filter__header">
+        <h2 id="time-heading">Service remaining</h2>
+        <button type="button" id="time-reset" class="pill-button" disabled>Full day</button>
+      </div>
+      <label for="time-slider">From <output id="time-label" for="time-slider">12:00 AM</output></label>
+      <input id="time-slider" type="range" min="0" max="1440" step="1" value="0" disabled aria-describedby="time-help time-status" />
+      <div class="scale-labels"><span>Midnight</span><span id="time-end">Next midnight</span></div>
+      <p id="time-help">Move later to see routes and stops disappear after their last departure.</p>
+      <p id="time-status" role="status">Loading schedule…</p>
+    </section>
 
     <section class="route-filter" aria-labelledby="route-filter-heading">
       <div class="route-filter__header">
@@ -82,6 +95,11 @@ document.querySelector("#app").innerHTML = `
     <small>Dots are randomly placed within census areas. Distances are straight-line estimates, not walking distances. Route shading shows overlapping shapes, not service frequency. Service figures are for ${DATE_LABEL}.</small>
   </aside>
 `;
+
+const timeSlider = document.querySelector("#time-slider");
+const timeLabel = document.querySelector("#time-label");
+const timeStatus = document.querySelector("#time-status");
+const timeReset = document.querySelector("#time-reset");
 
 const searchEl = document.querySelector("#route-search");
 const routeListEl = document.querySelector("#route-list");
@@ -385,20 +403,23 @@ function buildStopFeatures(selectedSet) {
     const served = serviceIndex.stopRouteTimes.get(stop.properties.stop_id);
     if (!served) continue;
 
-    const allRouteIds = sortRouteIds([...served.keys()]);
+    const allRouteIds = sortRouteIds([...served.keys()].filter((id) =>
+      state.timeMinutes === 0 || served.get(id).times.some((time) => time >= state.timeMinutes)
+    ));
     let departures = 0;
     let times = [];
     let matchingRoutesCount = 0;
 
     for (const [rId, entry] of served.entries()) {
-      if (isAll || selectedSet.has(rId)) {
-        departures += entry.count;
-        times = times.concat(entry.times);
+      if (allRouteIds.includes(rId) && (isAll || selectedSet.has(rId))) {
+        const remainingTimes = entry.times.filter((time) => time >= state.timeMinutes);
+        departures += state.timeMinutes === 0 ? entry.count : remainingTimes.length;
+        times = times.concat(remainingTimes);
         matchingRoutesCount++;
       }
     }
 
-    if (departures === 0 && !isAll) continue; // Skip stops not served by active selection
+    if (departures === 0) continue; // Skip stops not served by active selection
 
     times.sort((a, b) => a - b);
 
@@ -522,6 +543,8 @@ async function init() {
   wireMapInteractions();
   wireControls();
   renderRouteList();
+  applyRouteSelectionToMap();
+  updateTimeStatus();
 
   const initialRoutes = readHashRoutes();
   if (initialRoutes.length > 0) {
@@ -686,18 +709,36 @@ function updateRouteSelection({ fit = false } = {}) {
   if (fit && !isAll) fitToSelectedRoutes();
 }
 
+function remainingRouteIds() {
+  return routes.filter((route) => {
+    const stats = serviceIndex.routeStats.get(route.id);
+    return stats && stats.last >= state.timeMinutes;
+  }).map((route) => route.id);
+}
+
+function updateTimeStatus() {
+  const count = remainingRouteIds().length;
+  timeStatus.textContent = count
+    ? `${count} routes with service remaining on ${DATE_LABEL}`
+    : `No service remaining on ${DATE_LABEL}`;
+}
+
 function applyRouteSelectionToMap() {
+  const remaining = remainingRouteIds();
+  const timeFilter = ["in", ["get", "route_id"], ["literal", remaining]];
+  map.setFilter("route-layer", timeFilter);
+  map.setFilter("route-hit-layer", timeFilter);
   const isAll = state.selectedRouteIds.size === 0;
 
   if (isAll) {
     map.setPaintProperty("route-layer", "line-opacity", 0.23);
     map.setFilter("route-selected-casing", NO_MATCH);
     map.setFilter("route-selected-layer", NO_MATCH);
-    map.setFilter("route-number-layer", null);
+    map.setFilter("route-number-layer", timeFilter);
     map.setPaintProperty("route-number-layer", "text-halo-color", "#173b65");
     map.setPaintProperty("route-number-layer", "text-color", "#ffffff");
   } else {
-    const selectedArray = Array.from(state.selectedRouteIds);
+    const selectedArray = remaining.filter((id) => state.selectedRouteIds.has(id));
     const filterMatch = ["in", ["get", "route_id"], ["literal", selectedArray]];
 
     map.setPaintProperty("route-layer", "line-opacity", 0.08);
@@ -727,7 +768,7 @@ function fitPadding() {
 function fitToSelectedRoutes() {
   if (state.selectedRouteIds.size === 0) return;
   const selectedArray = Array.from(state.selectedRouteIds);
-  const shapes = routesGeoJson.features.filter((f) => selectedArray.includes(f.properties.route_id));
+  const shapes = routesGeoJson.features.filter((f) => selectedArray.includes(f.properties.route_id) && remainingRouteIds().includes(f.properties.route_id));
   const target = shapes.length ? { type: "FeatureCollection", features: shapes } : currentStops;
   if (!target.features.length) return;
 
@@ -743,14 +784,15 @@ function fitToSelectedRoutes() {
 
 function updateDistanceColors() {
   const useSelected = state.distanceToSelectedOnly && state.selectedRouteIds.size > 0;
-  const key = useSelected ? Array.from(state.selectedRouteIds).sort().join(",") : "ALL";
+  const distanceStops = useSelected ? currentStops : allStops;
+  const key = distanceStops.features.map((stop) => stop.properties.stop_id).sort().join("|");
 
   distanceHeading.textContent = useSelected
     ? `Distance to Selected Routes' Stops`
     : "Distance to Nearest Stop";
 
   if (key === lastDistanceKey) return;
-  colorPopulationByDistance(populationDots, useSelected ? currentStops : allStops);
+  colorPopulationByDistance(populationDots, distanceStops);
   map.getSource("population-dots").setData(populationDots);
   lastDistanceKey = key;
 }
@@ -787,7 +829,9 @@ function renderRouteList() {
 
   routeListEl.replaceChildren(
     ...matches.map((route) => {
-      const trips = serviceIndex.routeStats.get(route.id)?.tripCount || 0;
+      const stats = serviceIndex.routeStats.get(route.id);
+      const trips = stats?.tripCount || 0;
+      const hasRemaining = stats && stats.last >= state.timeMinutes;
       const isSelected = state.selectedRouteIds.has(route.id);
 
       const checkbox = el("input", {
@@ -799,7 +843,7 @@ function renderRouteList() {
       const item = el(
         "label",
         {
-          className: `route-item${trips ? "" : " is-inactive"}${isSelected ? " is-selected" : ""}`,
+          className: `route-item${hasRemaining ? "" : " is-inactive"}${isSelected ? " is-selected" : ""}`,
           "data-route-id": route.id,
           title: trips
             ? `${routeLabel(route)}: ${trips} trips on ${DATE_LABEL}`
@@ -808,7 +852,7 @@ function renderRouteList() {
         checkbox,
         routeBadge(route),
         el("span", { className: "route-item__name" }, route.longName || routeLabel(route)),
-        el("span", { className: "route-item__meta" }, trips ? `${trips} trips` : "No service")
+        el("span", { className: "route-item__meta" }, hasRemaining ? `Until ${formatClock(stats.last)}` : trips ? "Service ended" : "No service")
       );
 
       item.style.setProperty("--route-color", route.color);
@@ -868,6 +912,36 @@ function renderSummary() {
 
 function wireControls() {
   searchEl.disabled = false;
+  const lastDeparture = Math.max(0, ...[...serviceIndex.routeStats.values()].map((stats) => stats.last));
+  timeSlider.max = String(Math.max(1440, Math.floor(lastDeparture) + 1));
+  document.querySelector("#time-end").textContent = formatClock(Number(timeSlider.max));
+  timeSlider.disabled = false;
+  timeReset.disabled = false;
+  let timeUpdateTimer;
+  function applyTime() {
+    clearTimeout(timeUpdateTimer);
+    state.timeMinutes = Number(timeSlider.value);
+    allStops = buildStopFeatures(new Set());
+    updateRouteSelection();
+    renderRouteList();
+    updateTimeStatus();
+  }
+  function showTime() {
+    timeLabel.textContent = formatClock(Number(timeSlider.value));
+    timeSlider.setAttribute("aria-valuetext", timeLabel.textContent);
+  }
+  showTime();
+  timeSlider.addEventListener("input", () => {
+    showTime();
+    clearTimeout(timeUpdateTimer);
+    timeUpdateTimer = setTimeout(applyTime, 120);
+  });
+  timeSlider.addEventListener("change", applyTime);
+  timeReset.addEventListener("click", () => {
+    timeSlider.value = "0";
+    showTime();
+    applyTime();
+  });
 
   searchEl.addEventListener("input", () => {
     state.searchText = searchEl.value;
@@ -946,7 +1020,7 @@ function showStopPopup(feature, lngLat) {
       "div",
       { className: "map-popup" },
       el("strong", {}, p.stop_name || "Bus stop"),
-      el("p", {}, hasFilter ? "Selected departures: " : "Daily departures: ", el("b", {}, String(p.departures ?? 0))),
+      el("p", {}, state.timeMinutes > 0 ? "Remaining departures: " : hasFilter ? "Selected departures: " : "Daily departures: ", el("b", {}, String(p.departures ?? 0))),
       el("p", {}, "Avg headway: ", el("b", {}, headway)),
       el("p", {}, "Routes serving stop: ", el("b", {}, String(p.routeCount ?? 0))),
       routeIds.length ? routeChips(routeIds) : null

@@ -253,3 +253,10 @@
   display: flex;
   gap: 6px;
 }
+.time-filter { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid #e2e8f0; }
+.time-filter label { display: block; margin-top: 12px; font-size: 13px; }
+.time-filter output { font-weight: 700; font-variant-numeric: tabular-nums; }
+#time-slider { width: 100%; margin: 12px 0 0; accent-color: #173b65; cursor: pointer; }
+#time-slider:focus-visible { outline: 2px solid #173b65; outline-offset: 3px; }
+#time-help { color: #64748b; line-height: 1.4; }
+#time-status { font-weight: 600; margin-bottom: 0; }
